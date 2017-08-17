@@ -46,7 +46,7 @@ package binlog.query
  */
 object BQLParser {
 
-  def parseBql(input: String) = Grammar.parseAll(input)
+  def parseBql(input: String) = Grammar.parseAll(input.trim)
 
   object Lexical {
     import fastparse.all._
@@ -110,10 +110,9 @@ object BQLParser {
     import matryoshka.data._
 
     type Expr = Fix[ExprF]
-    type Operator = Fix[OperatorF]
 
     def parseToEnd(input: String) = (stmt ~ End).parse(input)
-    def parseAll(input: String): Operator = parseToEnd(input) match {
+    def parseAll(input: String): Expr = parseToEnd(input) match {
       case Parsed.Success(res, _) => res
       case res => throw new Exception(res.toString)
     }
@@ -121,47 +120,32 @@ object BQLParser {
     /** Grammar starting point */
     val stmt = P( selectQuery | kw("explain") ~ selectQuery )
 
-    val selectQuery =
-      P( selectClause ~ fromClause ~ whereClause ~ groupClause ~ limitClause).map{
-        case (t, p, s, f, g, l) =>
-          l(g(p(f(t(s)))))
+    val selectQuery: Parser[Expr] =
+      P( selectClause ~ fromClause ~ whereClause.? ~ groupClause.? ~ limitClause.? ).map{
+        case (t, p, s, f, g, l) => Fix(t(p, s, f, g, l): ExprF[Expr])
       }
 
-    val selectClause = P( selectOrStream ~/ fieldExpressions )
-    val selectOrStream: Parser[String => Operator] =
-      P( kw("select").map(_ => (s: String) => Fix(Scan[Operator](s)))
-        | kw("stream").map(_ => (s: String) => Fix(Stream[Operator](s))))
-    val fieldExpressions: Parser[Operator => Operator] = P( fieldList ).map {
-      case (exprs, names) =>
-        (op: Operator) => Fix(Project(names, exprs, op): OperatorF[Fix[OperatorF]])
-    }
+    val selectClause = P( selectOrStream ~/ fieldList )
+    val selectOrStream =
+      P( kw("select").map(_ => Select[Expr] _)
+        | kw("stream").map(_ => Stream[Expr] _) )
 
-    val fromClause = P( kw("from") ~/ quoted )
+    val fromClause: Parser[String] = P( kw("from") ~/ quoted )
 
-    val whereClause = P( kw("where") ~/ expr ).?.map{
-      case Some(pred) =>
-        (op: Operator) => Fix(Filter(pred, op): OperatorF[Operator])
-      case None => (op: Operator) => op
-    }
+    val whereClause: Parser[Expr] = P( kw("where") ~/ expr )
 
-    val groupClause = P( kw("group") ~ kw("by") ~/ idList ).?.map{
-      case Some(keys) => (op: Operator) => Fix(Group(keys, op))
-      case None => (op: Operator) => op
-    }
+    val groupClause: Parser[Vector[String]] =
+      P( kw("group") ~ kw("by") ~/ idList )
 
-    val limitClause = P( kw("limit") ~/ intLiteral ).?.map{
-      case Some(rc) => (op: Operator) => Fix(Limit(rc.l, op))
-      case None => (op: Operator) => op
-    }
-
+    val limitClause: Parser[Long] = P( kw("limit") ~/ intLiteral ).map{ _.l }
 
     val idList = P( ident.rep(min=1,sep=",".~/) ).map(_.toVector)
 
-    val fieldList: Parser[(Vector[Expr], Vector[String])] =
+    val fieldList: Parser[(Vector[String], Vector[Expr])] =
       P( ( expr ~ kw("as") ~ ident
          | identifier.map( ide => (Fix(Ident(ide)): Expr, colName(ide)) )
          ).rep(min=1,sep=",")
-       ).map(_.toVector.unzip)
+       ).map(_.toVector.unzip.swap)
 
     val expr: Parser[Expr] = // disjunction
       P( conjunction.rep(min=1, sep=kw("or")) ).map{

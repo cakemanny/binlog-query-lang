@@ -2,17 +2,21 @@ package binlog.query
 
 object QueryAST extends Primitives {
 
-  sealed abstract class OperatorF[A]
-  case class Scan[A](filename: String) extends OperatorF[A]
-  case class Stream[A](connection: String) extends OperatorF[A]
-  case class Filter[A,E](pred: E, parent: A) extends OperatorF[A]
-  case class Project[A,E](
-    colNames: Vector[String], colExprs: Vector[E], parent: A
-  ) extends OperatorF[A]
-  case class Group[A](keys: Vector[String], parent: A) extends OperatorF[A]
-  case class Limit[A](rowCount: Long, parent: A) extends OperatorF[A]
-
   sealed abstract class ExprF[A]
+  case class Select[A](
+    projection: (Vector[String], Vector[A]),
+    dataSource: String, // filename or connection string
+    filterPred: Option[A],
+    groupingKeys: Option[Vector[String]],
+    limit: Option[Long]
+  ) extends ExprF[A]
+  case class Stream[A](
+    projection: (Vector[String], Vector[A]),
+    connectionString: String, // connection string
+    filterPred: Option[A],
+    groupingKeys: Option[Vector[String]],
+    limit: Option[Long]
+  ) extends ExprF[A]
   case class And[A](exprs: Seq[A]) extends ExprF[A]
   case class Or[A](exprs: Seq[A]) extends ExprF[A]
   case class Not[A](expr: A) extends ExprF[A]
@@ -24,16 +28,26 @@ object QueryAST extends Primitives {
   case class FnCall[A](fnName: String, args: Seq[A]) extends ExprF[A]
   case class Case[A](scrutinee: A, branches: Seq[(A, A)], elseValue: A) extends ExprF[A]
 
-  // define a function instance to allow matryoshka to work
+  // define a functor instance to allow matryoshka to work
 
-  implicit val opFunctor = new scalaz.Functor[OperatorF] {
-    def map[A, B](fa: OperatorF[A])(f: A => B): OperatorF[B] = fa match {
-      case Scan(s) => Scan(s)
-      case Stream(s) => Stream(s)
-      case Filter(e, a) => Filter(e, f(a))
-      case Project(x0,x1, a) => Project(x0,x1, f(a))
-      case Group(x, a) => Group(x, f(a))
-      case Limit(x, a) => Limit(x, f(a))
+  implicit val exprFunctor: scalaz.Functor[ExprF] = new scalaz.Functor[ExprF] {
+    import scalaz.syntax.functor._, scalaz.std.tuple._
+    def map[A, B](fa: ExprF[A])(f: A => B): ExprF[B] = fa match {
+      case Select(prj, ds, fp, gk, l) =>
+        Select(prj.map(_ map f), ds, fp map f, gk, l)
+      case Stream(prj, ds, fp, gk, l) =>
+        Stream(prj.map(_ map f), ds, fp map f, gk, l)
+      case And(exprs) => And(exprs.map(f))
+      case Or(exprs) => Or(exprs.map(f))
+      case Not(expr) => Not(f(expr))
+      case Comp(op, lhs, rhs) => Comp(op, f(lhs), f(rhs))
+      case Like(expr, pattern) => Like(f(expr), pattern)
+      case BinOp(op, lhs, rhs) => BinOp(op, f(lhs), f(rhs))
+      case Lit(lit) => Lit(lit)
+      case Ident(ident) => Ident(ident)
+      case FnCall(fnName, args) => FnCall(fnName, args.map(f))
+      case Case(scrutinee, branches, elseValue) =>
+        Case(f(scrutinee), branches.map{case (a1,a2) => (f(a1),f(a2))}, f(elseValue))
     }
   }
 
