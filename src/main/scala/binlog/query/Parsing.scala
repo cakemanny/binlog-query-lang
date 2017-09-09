@@ -46,7 +46,8 @@ package binlog.query
  */
 object BQLParser {
 
-  def parseBql(input: String) = Grammar.parseAll(input.trim)
+  def parseBql(input: String): matryoshka.data.Fix[QueryAST.ExprF] =
+    Grammar.parseAll(input.trim)
 
   object Lexical {
     import fastparse.all._

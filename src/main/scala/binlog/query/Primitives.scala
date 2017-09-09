@@ -40,6 +40,12 @@ trait Primitives {
   case class StrL(str: String) extends Literal
   case object NullL extends Literal
 
+  // A few of common shared literals
+  val LongL0: LongL = LongL(0L)
+  val LongL1: LongL = LongL(1L)
+  val StrL0: StrL = StrL("0")
+  val StrL1: StrL = StrL("1")
+  val StrLEmpty: StrL = StrL("")
 
   sealed abstract class ScalarFunction
   case object Concat extends ScalarFunction

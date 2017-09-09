@@ -12,9 +12,230 @@ object Main {
     import matryoshka._
     import matryoshka.implicits._
     import matryoshka.data._
+    import scalaz._, Scalaz._
 
     println(parsed)
 
+    def validateFile(filePath: String): ValidationNel[String, String] = {
+      import java.nio.file._
+      val path = Paths.get(filePath)
+      try { // just prove we can open for reading
+        val inputStream = Files.newInputStream(path)
+        inputStream.close()
+        filePath.successNel
+      } catch {
+        case t: Throwable => t.getMessage.failureNel
+      }
+    }
+
+    def validateConnectionString(ds: String): ValidationNel[String, String] = {
+      // want mysql://localhost:3306
+      val pat = raw"mysql://(\w+)(?:([:][0-9]+)/?)?".r
+
+      ds match {
+        case pat(hostname) =>
+          println("hostname: $hostname")
+          ds.successNel
+        case pat(hostname, port) =>
+          println("host:port: $hostname:$port")
+          ds.successNel
+        case _ =>
+          ("connection string must " +
+            "match \"mysql://{hostname}[:{port}]\" format").failureNel
+      }
+
+      // are we meant to try connect at this point?
+    }
+
+    val checkedDsValid: ValidationNel[String, String] = parsed match {
+      case Fix(Select(_, ds, _, _, _)) =>
+        validateFile(ds) orElse validateConnectionString(ds)
+      case Fix(Stream(_, ds, _, _, _)) =>
+        validateConnectionString(ds)
+      case _ => sys.error("not allowed by grammar")
+    }
+
+    // Evaluate
+    def execQuery(op: Fix[ExprF]): Unit = op match {
+      case Fix(Select(prj, ds, flt, grp, lim)) =>
+        // * We want to use parts of the filter to influence how we scan the file!
+        // Not possible with shyiko apparently!
+        // * Want to reorder Ands and Ors from least computational to most
+        // * Want to fold constant expressions
+
+        import scala.util.Try
+
+        def castToLong(lit: Literal): LongL = lit match {
+          case l@LongL(_) => l
+          case StrL(s) => Try(s.toLong).fold(_ => LongL0, LongL)
+          case NullL => LongL0
+        }
+        def castToStr(lit: Literal): StrL = lit match {
+          case s@StrL(_) => s
+          case LongL(l) => l match {
+            case 0 => StrL0
+            case 1 => StrL1
+            case l => StrL(l.toString)
+          }
+          case NullL => StrLEmpty
+        }
+        @inline def bool2Long(b: Boolean): LongL = if (b) LongL1 else LongL0
+
+        @inline def minL(lhs: LongL, rhs: LongL): LongL =
+          if (lhs.l < rhs.l) lhs else rhs
+        @inline def maxL(lhs: LongL, rhs: LongL): LongL =
+          if (lhs.l > rhs.l) lhs else rhs
+        // This exhibits a problem, we don't get a shortcutting AND or OR...
+        // maybe we need a different kind of fold than cata...
+        def evalExpr(evt: DataAccess.Event): Algebra[ExprF, Literal] = {
+          case Select(_, _, _, _, _) => sys.error("nested selects prohibited")
+          case Stream(_, _, _, _, _) => sys.error("nested stream")
+          case And(exprs) =>
+            exprs.foldLeft(LongL1){ (mem, expr) => minL(mem, castToLong(expr)) }
+          case Or(exprs) =>
+            exprs.foldLeft(LongL0){ (mem, expr) => maxL(mem, castToLong(expr)) }
+          case Not(expr) =>
+            if (castToLong(expr) == LongL0) LongL1 else LongL0
+          case Comp(compOp, lhs, rhs) =>
+            // if either side is null, then Null
+            // if either side is LongL then cast both sides
+            // otherwise do string comparison
+            if (lhs == NullL || rhs == NullL) NullL
+            else (lhs, rhs) match {
+              case (StrL(slhs), StrL(srhs)) =>
+                @inline def appStr(f: (String, String) => Boolean) =
+                  bool2Long(f(slhs, srhs))
+                compOp match {
+                  case Eq => appStr(_ == _)
+                  case Neq => appStr(_ != _)
+                  case Gt => appStr(_ > _)
+                  case Gte => appStr(_ >= _)
+                  case Lt => appStr(_ < _)
+                  case Lte => appStr(_ <= _)
+                }
+              case _ =>
+                @inline def appLong(f: (Long, Long) => Boolean) =
+                  bool2Long(f(castToLong(lhs).l, castToLong(rhs).l))
+                compOp match {
+                case Eq => appLong(_ == _)
+                case Neq => appLong(_ != _)
+                case Gt => appLong(_ > _)
+                case Gte => appLong(_ >= _)
+                case Lt => appLong(_ < _)
+                case Lte => appLong(_ <= _)
+              }
+            }
+          case Like(expr, pattern) =>
+            val str = castToStr(expr).str
+            val asRegex = pattern.flatMap{c => if (c == '%') ".*" else c.toString}
+            bool2Long(asRegex.matches(str))
+          case BinOp(numOp, lhs, rhs) =>
+            val f: (Long, Long) => Long = numOp match {
+              case QueryAST.Plus => { _ + _ }
+              case QueryAST.Minus => { _ - _ }
+              case QueryAST.Multiply => { _ * _ }
+              case QueryAST.Divide => { _ / _ }
+            }
+            Try(f(castToLong(lhs).l, castToLong(rhs).l)).fold(_ => NullL, LongL)
+          case Lit(lit) => lit
+          case Ident(ident) => {// TODO: resolve reference against row
+            import DataAccess._
+            // ident ^ tableInfo => colIndex
+            // data ^ colIndex => value
+            ident match {
+              case QualifiedIdent(tableName, ord) => ???
+              case UnQualIdent(columnName) => ??? // read some caches columnName => index map
+              case ColumnOrdinal(ord) => evt match {
+                case Row(tableInfo, before, data) =>
+                  val value = data(ord.toInt)
+                  tableInfo.schema(ord.toInt) match {
+                    case LongCol => LongL(value.asInstanceOf[Long])
+                    case StringCol => StrL(value.toString)
+                    case BlobCol => ???
+                  }
+                case Query(sql) => ??? // parse SQL?
+              }
+              case QualifiedOrd(tableName, ord) => evt match {
+                case Row(tableInfo, before, data) =>
+                  if (tableName == tableInfo.tableName) {
+                    val value = data(ord.toInt)
+                    tableInfo.schema(ord.toInt) match {
+                      case LongCol => LongL(value.asInstanceOf[Long])
+                      case StringCol => StrL(value.toString)
+                      case BlobCol => ???
+                    }
+                  } else {
+                    NullL
+                  }
+                case Query(sql) => ??? // parse SQL?
+              }
+            }
+          }
+          case FnCall(fnName, args) => ???
+            // implement a few functions
+          case Case(scrutinee, branches, elseValue) => // TODO
+            branches.view
+              .filter(p => scrutinee == p._1)
+              .map(_._2)
+              .headOption.getOrElse(elseValue)
+        }
+
+        val theFilter = flt.getOrElse(Fix[ExprF](Lit(LongL1)))
+
+        def evalFilter(flt: Fix[ExprF])(evt: DataAccess.Event): Boolean = flt.unFix match {
+          case Select(_, _, _, _, _) => sys.error("nested select")
+          case Stream(_, _, _, _, _) => sys.error("nested stream")
+          case And(exprs) =>
+            exprs.forall(expr => evalFilter(expr)(evt))
+          case Or(exprs) =>
+            exprs.foldLeft(false) { (soFar, expr) => soFar || evalFilter(expr)(evt) }
+          case Not(expr) =>
+            !evalFilter(expr)(evt)
+          case Comp(_, _, _) => flt.cata(evalExpr(evt)) == LongL1
+          case Like(expr, pattern) =>
+            val matcher = expr.cata(evalExpr(evt))
+            val asRegex = pattern.flatMap{c => if (c == '%') ".*" else c.toString}
+            castToStr(matcher).str.matches(asRegex)
+          case BinOp(_, _, _) =>
+            castToLong(flt.cata(evalExpr(evt))).l != 0
+          case Lit(lit) => lit match {
+            case LongL(l) => l != 0
+            case StrL(str) => str != null && str != ""
+            case NullL => false
+          }
+          case Ident(ident) =>
+            // devolve to literal case
+            evalFilter(Fix[ExprF](Lit(flt.cata(evalExpr(evt)))))(evt)
+          case FnCall(_, _) =>
+            evalFilter(Fix[ExprF](Lit(flt.cata(evalExpr(evt)))))(evt)
+          case Case(scrutinee, branches, elseValue) => // TODO
+            // Something like first branch where Comp(Eq,scrut, _1) == true give _2
+            // TODO: evaluate scrutinee at most once
+            evalFilter(
+              branches.view
+                .filter(p => evalFilter(Fix(Comp(Eq, scrutinee, p._1)))(evt))
+                .map(_._2)
+                .headOption.getOrElse(elseValue)
+            )(evt)
+        }
+
+        DataAccess.scanFile(ds) { evt =>
+          // evaluate the filter against the event
+          if (evalFilter(theFilter)(evt)) {
+            // project? or group?
+          }
+        }
+      case Fix(Stream(prj, ds, flt, grp, lim)) => ???
+      case _ => sys.error("disallowed expression at top level")
+    }
+
+    (for {
+      _ <- checkedDsValid
+
+    } yield ()) match {
+      case Success(_) => println("success")
+      case Failure(_) => println("failure")
+    }
   }
 
 }
