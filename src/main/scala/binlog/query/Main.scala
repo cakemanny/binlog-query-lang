@@ -139,35 +139,67 @@ object Main {
             Try(f(castToLong(lhs).l, castToLong(rhs).l)).fold(_ => NullL, LongL)
           case Lit(lit) => lit
           case Ident(ident) => {// TODO: resolve reference against row
+            // we should probably start by trying to convert Query into ROW for
+            // complete update or insert statements
             import DataAccess._
             // ident ^ tableInfo => colIndex
             // data ^ colIndex => value
             ident match {
-              case QualifiedIdent(tableName, ord) => ???
-              case UnQualIdent(columnName) => ??? // read some caches columnName => index map
+              case QualifiedIdent(tableName, columnName) =>
+                (tableName, columnName, evt) match {
+                  case ("meta", "table_name", Row(tableInfo, _, _, _)) =>
+                    StrL(tableInfo.tableName)
+                  case ("meta", "table_name", Query(_,_)) => NullL
+                  case ("meta", "table_schema", Row(tableInfo, _, _, _)) =>
+                    StrL(tableInfo.tableName)
+                  case ("meta", "table_schema", Query(_,_)) => NullL
+                  case ("meta", "query", Query(sql, _)) => StrL(sql)
+                  case ("meta", "query", Row(_, _, _, _)) => NullL
+                  case ("meta", "position", evt) => LongL(evt.meta.position)
+                  case ("meta", "timestamp", evt) => LongL(evt.meta.timestamp)
+                  case ("meta", "server_id", evt) => LongL(evt.meta.serverId)
+                  case ("meta", "xid", evt) => LongL(evt.meta.xid)
+                  case ("meta", unknownCol, _) =>
+                    sys.error(s"unknown col meta.$unknownCol")
+                  case _ => ??? // TODO: new, old, data
+                }
+              case UnQualIdent(columnName) =>
+                // read some caches columnName => index map
+                ??? 
               case ColumnOrdinal(ord) => evt match {
-                case Row(tableInfo, before, data) =>
+                case Row(tableInfo, _, data, _) =>
                   val value = data(ord.toInt)
                   tableInfo.schema(ord.toInt) match {
                     case LongCol => LongL(value.asInstanceOf[Long])
                     case StringCol => StrL(value.toString)
                     case BlobCol => ???
                   }
-                case Query(sql) => ??? // parse SQL?
+                case Query(sql, _) => ??? // parse SQL?
               }
               case QualifiedOrd(tableName, ord) => evt match {
-                case Row(tableInfo, before, data) =>
-                  if (tableName == tableInfo.tableName) {
-                    val value = data(ord.toInt)
-                    tableInfo.schema(ord.toInt) match {
-                      case LongCol => LongL(value.asInstanceOf[Long])
+                case Row(tableInfo, before, data, _) =>
+                  val image =
+                    if (Seq(tableInfo.tableName,"data","new") contains tableName)
+                      Some(data)
+                    else if (tableName == "old") before
+                    else None
+
+                  image.filter(ord.toInt < _.size)
+                    .flatMap(data => Option(data(ord.toInt)))
+                    .map( value => tableInfo.schema(ord.toInt) match {
+                      case LongCol => LongL(value match {
+                        case i: java.lang.Integer => i.toLong
+                        case l: java.lang.Long => l.toLong
+                        case s: String => s.toLong
+                        case v => v.asInstanceOf[Long]
+                      })
                       case StringCol => StrL(value.toString)
                       case BlobCol => ???
-                    }
-                  } else {
-                    NullL
-                  }
-                case Query(sql) => ??? // parse SQL?
+                    }).getOrElse(NullL)
+
+                case Query(sql, _) =>
+                  // TODO: parse SQL?
+                  NullL
               }
             }
           }
@@ -219,20 +251,39 @@ object Main {
             )(evt)
         }
 
+        val startTime = System.currentTimeMillis
+        var rowsReturned = 0L
+
+        // print header
+        println(prj._1 mkString "\t")
+
         DataAccess.scanFile(ds) { evt =>
           // evaluate the filter against the event
           if (evalFilter(theFilter)(evt)) {
-            // project? or group?
+            if (lim.map(_ > rowsReturned).getOrElse(true)) {
+              rowsReturned += 1
+              // project? or group?
+
+              val projected = prj._2.map{ _.cata(evalExpr(evt)) }.map{
+                case StrL(s) => s
+                case LongL(l) => l.toString
+                case NullL => "NULL"
+              }
+              println(projected mkString "\t")
+            }
           }
         }
+        val endTime = System.currentTimeMillis
+        println(s"# $rowsReturned rows returned in ${endTime - startTime}ms")
       case Fix(Stream(prj, ds, flt, grp, lim)) => ???
       case _ => sys.error("disallowed expression at top level")
     }
 
     (for {
       _ <- checkedDsValid
-
-    } yield ()) match {
+    } yield {
+      execQuery(parsed)
+    }) match {
       case Success(_) => println("success")
       case Failure(_) => println("failure")
     }

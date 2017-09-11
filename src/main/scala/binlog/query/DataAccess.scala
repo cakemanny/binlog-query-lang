@@ -12,17 +12,26 @@ object DataAccess {
   final case object StringCol extends ColType
   final case object BlobCol extends ColType
 
-  sealed abstract class Event
+  sealed abstract class Event {
+    def meta: MetaInfo
+  }
   // we keep schema separate so that we can reuse it
   final case class Row(
     tableInfo: TableInfo,
     before: Option[IndexedSeq[Any]],
-    data: IndexedSeq[Any]
+    data: IndexedSeq[Any],
+    meta: MetaInfo
   ) extends Event
 
   // we ought to want to parse this for value only insert/update
-  final case class Query(sql: String) extends Event
+  final case class Query(sql: String, meta: MetaInfo) extends Event
 
+  case class MetaInfo(
+    position: Long,
+    serverId: Long,
+    timestamp: Long,
+    xid: Long
+  )
 
   case class TableInfo(database: String, tableName: String, schema: IndexedSeq[ColType])
 
@@ -69,21 +78,45 @@ object DataAccess {
     }
   }
 
-  def mkUpdateRows(tableInfo: TableInfo, data: UpdateRowsEventData): Seq[Row] = {
+  def expandIncludedCols(image: Array[java.io.Serializable], included: java.util.BitSet): IndexedSeq[Any] = {
+    var i = 0
+    var j = 0
+    val buf = scala.collection.mutable.ArrayBuffer.empty[Any]
+    while (i < image.size) {
+      if (included.get(j)) {
+        buf += image(i)
+        i += 1
+      } else {
+        buf += null
+      }
+      j += 1
+    }
+    buf.toVector
+  }
+
+  def mkUpdateRows(tableInfo: TableInfo, data: UpdateRowsEventData, meta: MetaInfo): Seq[Row] = {
     import scala.collection.JavaConverters.asScalaBuffer
     asScalaBuffer(data.getRows).map { mapEntry =>
-      val beforeImage = mapEntry.getKey
-      val afterImage = mapEntry.getValue
+      val beforeImage = expandIncludedCols(mapEntry.getKey, data.getIncludedColumnsBeforeUpdate)
+      val afterImage = expandIncludedCols(mapEntry.getValue, data.getIncludedColumns)
       Row(
         tableInfo,
-        Some(beforeImage.toIndexedSeq),
-        afterImage.toIndexedSeq
+        Some(beforeImage),
+        afterImage,
+        meta
       )
     }
   }
-  def mkInsertRow(tableInfo: TableInfo, data: WriteRowsEventData): Seq[Row] = {
+  def mkInsertRow(tableInfo: TableInfo, data: WriteRowsEventData, meta: MetaInfo): Seq[Row] = {
     import scala.collection.JavaConverters.asScalaBuffer
-    asScalaBuffer(data.getRows).map { Row(tableInfo, None, _) }
+    asScalaBuffer(data.getRows).map { values =>
+      Row(
+        tableInfo,
+        None,
+        expandIncludedCols(values, data.getIncludedColumns),
+        meta
+      )
+    }
   }
 
   // should scan file take a continuation or produce an iterator/stream...
@@ -91,10 +124,13 @@ object DataAccess {
   def scanFile(path: String)(yld: Event => Unit): Unit = {
     import com.github.shyiko.mysql.{ binlog => bl }
     import bl.BinaryLogFileReader
-    import bl.event.EventHeader
+    import bl.event.{ EventHeader, EventHeaderV4 }
+    import bl.event.deserialization.{ EventDeserializer, ChecksumType }
 
     val file = new java.io.File(path)
-    val binlogReader = new BinaryLogFileReader(file)
+    val deserializer = new EventDeserializer()
+    deserializer.setChecksumType(ChecksumType.CRC32)
+    val binlogReader = new BinaryLogFileReader(file, deserializer)
     try {
 
       var tableMap = Map.empty[Long,TableInfo]
@@ -105,10 +141,20 @@ object DataAccess {
         // want to turn shyiko event into our event type
         val eventType = event.getHeader[EventHeader].getEventType
 
+        val header = event.getHeader[EventHeaderV4]
+        val meta = MetaInfo(
+          header.getPosition,
+          header.getServerId,
+          header.getTimestamp,
+          xid = 0L // we could wait until the transaction completes to
+          // produce the event...
+          // todo: buffer the events and add xid when we know it
+        )
+
         eventType match {
           case EventType.QUERY =>
             val queryEventData = event.getData[bl.event.QueryEventData]
-            yld(Query(queryEventData.getSql))
+            yld(Query(queryEventData.getSql, meta))
 
           case EventType.TABLE_MAP =>
             val data = event.getData[bl.event.TableMapEventData]
@@ -124,14 +170,14 @@ object DataAccess {
 
             tableMap.get(data.getTableId) match {
               case Some(tableInfo) =>
-                mkInsertRow(tableInfo, data) foreach yld
+                mkInsertRow(tableInfo, data, meta) foreach yld
               case None => () // log warning?
             }
           case EventType.EXT_UPDATE_ROWS =>
             val data = event.getData[bl.event.UpdateRowsEventData]
             tableMap.get(data.getTableId) match {
               case Some(tableInfo) =>
-                mkUpdateRows(tableInfo, data) foreach yld
+                mkUpdateRows(tableInfo, data, meta) foreach yld
               case None => () // log warning?
             }
 
