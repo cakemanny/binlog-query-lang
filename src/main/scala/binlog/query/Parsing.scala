@@ -159,13 +159,18 @@ object BQLParser {
     val negation: Parser[Expr] =
       P( kw("not") ~ comparison ).map(e => Fix(Not(e)))
     val comparison: Parser[Expr] =
-      P( bitExpr ~ (compOp ~ bitExpr).? ).map{
-        case (bit, Some((op, rhs))) => Fix(Comp(op, bit, rhs))
+      P( bitExpr ~ (
+          ( compOp ~ bitExpr ).map{ case (op, rhs) => (bit: Expr) => Fix(Comp(op, bit, rhs)) }
+        | ( kw("like") ~/ stringLiteral ).map{ lit => (bit: Expr) => Fix(Like(bit, lit.str))  }
+        | ( kw("not") ~ kw("like") ~/ stringLiteral ).map{ lit => (bit: Expr) => Fix(Not(Fix(Like(bit, lit.str))))  }
+      ).? ).map{
+        case (bit, Some(f)) => f(bit)
         case (bit, None) => bit
       }
     val compOp: Parser[CompOp] =
       P(  P("=").map(_ => Eq)
-        | P("!=").map(_ => Eq)
+        | P("!=").map(_ => Neq)
+        | P("<>").map(_ => Neq)
         | P("<=").map(_ => Lte)
         | P("<").map(_ => Lt)
         | P(">=").map(_ => Gte)
