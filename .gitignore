@@ -2,4 +2,6 @@
 target/
 # editor files
 .*.sw[op]
+.swp
+.idea/
 
