@@ -38,6 +38,7 @@ trait Primitives {
   sealed abstract class Literal
   case class LongL(l: Long) extends Literal
   case class StrL(str: String) extends Literal
+  case class DoubleL(d: Double) extends Literal
   case object NullL extends Literal
 
   // A few of common shared literals

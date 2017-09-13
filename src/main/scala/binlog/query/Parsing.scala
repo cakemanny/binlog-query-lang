@@ -195,7 +195,7 @@ object BQLParser {
       }
 
     val functionCall: Parser[Expr] =
-      P( ident ~ "(" ~/ expr.rep ~ ")" ).map{
+      P( ident ~ "(" ~/ expr.rep(sep=",") ~ ")" ).map{
         case (fnName, args) => Fix(FnCall(fnName, args))
       }
 

@@ -18,6 +18,8 @@ libraryDependencies ++= Seq(
 )
 
 scalacOptions += "-Ypartial-unification"
+scalacOptions += "-unchecked"
+scalacOptions += "-deprecation"
 
 sourceGenerators in Test += Def.task {
   val file = (sourceManaged in Test).value / "amm.scala"
