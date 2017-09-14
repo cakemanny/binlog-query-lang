@@ -52,7 +52,7 @@ object BQLParser {
   object Lexical {
     import fastparse.all._
 
-    def kw(s: String) = s ~ !(letter | digit | "_")
+    def kw(s: String) = IgnoreCase(s) ~ !(letter | digit | "_")
     val letter        = P( lowercase | uppercase )
     val lowercase     = P( CharIn('a' to 'z') )
     val uppercase     = P( CharIn('A' to 'Z') )
@@ -61,7 +61,8 @@ object BQLParser {
 
     val keywordList = Vector(
       "select", "stream", "from", "where", "group", "by", "as", "limit",
-      "not", "like", "null", "explain", "case", "then", "else", "end"
+      "not", "like", "null", "explain", "case", "then", "else", "end",
+      "and", "or"
     )
     val reservedList = Vector(
       "inner", "outer", "left", "right", "natural", "join"
@@ -100,7 +101,7 @@ object BQLParser {
   object Grammar {
     val WsApi = fastparse.WhitespaceApi.Wrapper {
       import fastparse.all._
-      NoTrace((" " | "\t").rep)
+      NoTrace((" " | "\t" | "\n").rep)
     }
     import fastparse.noApi._
     import WsApi._

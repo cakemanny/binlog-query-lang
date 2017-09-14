@@ -190,8 +190,19 @@ object Main {
               case _ => ??? // TODO: new, old, data
             }
           case UnQualIdent(columnName) =>
-            // read some caches columnName => index map
-            ??? 
+            evt match {
+              // read some caches columnName => index map
+              case Row(_,_,_,_) => NullL // TODO
+              case Query(sql, _) =>
+                import InsertUpdateAST._
+                Try(DMLParser.parseDML(sql)) match {
+                  case scala.util.Success(Insert(tbl, Some(cols), vals)) =>
+                    ??? // index of columnName in cols, lookup in vals
+                  case scala.util.Success(Update(tbl, vals, pred)) =>
+                    ??? // _2 where _1 of val in vals == columnName
+                  case _ => ???
+                }
+            }
           case ColumnOrdinal(ord) => evt match {
             case Row(tableInfo, _, data, _) =>
               val value = data(ord.toInt)
