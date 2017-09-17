@@ -40,27 +40,29 @@ object Main {
         inputStream.close()
         filePath.successNel
       } catch {
-        case t: Throwable => t.getMessage.failureNel
+        case t: Throwable =>
+          (t.getClass.getSimpleName.toString + ": " + t.getMessage).failureNel
       }
     }
 
     def validateConnectionString(ds: String): ValidationNel[String, String] = {
-      // want mysql://localhost:3306
-      val pat = raw"mysql://(?:(\w+)[:](\w+)@)?(\w+)(?:[:]([0-9]+))?/?".r
+      // want mysql://user:pass@localhost:3306/
+      // TODO: allow specifying the binlog file at the end
+      val pat = raw"mysql://(?:(\w+)[:](\w+)@)?([A-Za-z0-9.]+)(?:[:]([0-9]+))?/?".r
       ds match {
         case pat(user, pass, hostname, port) =>
           println("host:port: $hostname:$port")
           ds.successNel
         case _ =>
           ("connection string must " +
-            "match \"mysql://{hostname}[:{port}]\" format").failureNel
+            "match \"mysql://[{user}:{password}@]{hostname}[:{port}]\" format").failureNel
       }
       // are we meant to try connect at this point?
     }
 
     val checkedDsValid: ValidationNel[String, String] = parsed match {
       case Fix(Select(_, ds, _, _, _)) =>
-        validateFile(ds) orElse validateConnectionString(ds)
+         validateConnectionString(ds) orElse validateFile(ds)
       case Fix(Stream(_, ds, _, _, _)) =>
         validateConnectionString(ds)
       case _ => sys.error("not allowed by grammar")
@@ -177,7 +179,7 @@ object Main {
                 StrL(tableInfo.tableName)
               case ("meta", "table_name", Query(_,_)) => NullL
               case ("meta", "table_schema", Row(tableInfo, _, _, _)) =>
-                StrL(tableInfo.tableName)
+                StrL(tableInfo.database)
               case ("meta", "table_schema", Query(_,_)) => NullL
               case ("meta", "query", Query(sql, _)) => StrL(sql)
               case ("meta", "query", Row(_, _, _, _)) => NullL
@@ -323,11 +325,12 @@ object Main {
         // print header
         header(prj._1)
         // Want to branch strategy for group by case
+        // FIX ME, if it's a mysql://... we want to stream somewhat
         DataAccess.scanFile(ds) { evt =>
           // evaluate the filter against the event
           if (evalFilter(theFilter)(evt)) {
             if (lim.map(_ > rowsReturned).getOrElse(true)) {
-              rowsReturned += 1
+              rowsReturned += 1L
               // project? or group?
               val projected = prj._2.map{ _.cata(evalExpr(evt)) }
               yld(projected)
@@ -347,7 +350,7 @@ object Main {
           // evaluate the filter against the event
           if (evalFilter(theFilter)(evt)) {
             if (lim.map(_ > rowsReturned).getOrElse(true)) {
-              rowsReturned += 1
+              rowsReturned += 1L
               // project? or group?
               val projected = prj._2.map{ _.cata(evalExpr(evt)) }
               yld(projected)
@@ -364,7 +367,7 @@ object Main {
       execQuery(parsed)
     }) match {
       case Success(_) => println("success")
-      case Failure(msg) => println("failure: " + msg)
+      case Failure(msgs) => sys.error("failure: " + msgs.toList.mkString("; "))
     }
   }
 
