@@ -29,6 +29,7 @@ object DMLParser {
 
     import InsertUpdateAST.{ LongL, StrL, DoubleL, NullL }
 
+    // TODO: escape sequences
     val stringLiteral: Parser[StrL] =
       P( "'" ~/ CharsWhile(_ != '\'', min=0).! ~ "'").map(StrL)
 

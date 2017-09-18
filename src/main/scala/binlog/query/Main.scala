@@ -214,12 +214,32 @@ object Main {
               case Row(_,_,_,_) => NullL // TODO
               case Query(sql, _) =>
                 import InsertUpdateAST._
+                // If we are going to evaluate multiple columns then we'd
+                // be much better off only parsing once and reusing the
+                // result
                 Try(DMLParser.parseDML(sql)) match {
                   case scala.util.Success(Insert(tbl, Some(cols), vals)) =>
-                    ??? // index of columnName in cols, lookup in vals
+                    // index of columnName in cols, lookup in vals
+                    if (cols contains columnName)
+                      vals(cols.indexOf(columnName)) match {
+                        case LongL(l) => QueryAST.LongL(l)
+                        case StrL(s) => QueryAST.StrL(s)
+                        case DoubleL(d) => QueryAST.DoubleL(d)
+                        case NullL => QueryAST.NullL
+                      }
+                    else
+                      QueryAST.NullL
                   case scala.util.Success(Update(tbl, vals, pred)) =>
-                    ??? // _2 where _1 of val in vals == columnName
-                  case _ => ???
+                    // _2 where _1 of val in vals == columnName
+                    vals.find{case (cn,_) => cn == columnName}
+                      .map(_._2)
+                      .map{
+                        case LongL(l) => QueryAST.LongL(l)
+                        case StrL(s) => QueryAST.StrL(s)
+                        case DoubleL(d) => QueryAST.DoubleL(d)
+                        case NullL => QueryAST.NullL
+                      }.getOrElse(QueryAST.NullL) // TODO: look up EqP predicate as fall back
+                  case _ => QueryAST.NullL
                 }
             }
           case ColumnOrdinal(ord) => evt match {
