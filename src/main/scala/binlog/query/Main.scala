@@ -17,6 +17,10 @@ object Main {
     }
   }
 
+  def raise(msg: String): Nothing = {
+    throw new ClientErrorException(msg)
+  }
+
   def runQuery(query: String)
               (header: Vector[String] => Unit)
               (yld: Vector[QueryAST.Literal] => Unit): Unit = {
@@ -98,8 +102,20 @@ object Main {
           case s: String => s.toLong
           case v => v.asInstanceOf[Long]
         })
-        case StringCol => StrL(value.toString)
-        case BlobCol => ???
+        case StringCol => StrL(value match {
+          case d: java.sql.Timestamp => d.toString
+          case d: java.sql.Date => d.toString
+          case d: java.util.Date => java.sql.Timestamp.from(d.toInstant).toString
+          case otherwise => otherwise.toString
+        })
+        case BlobCol => StrL(value match {
+          case s: String => s
+          case bs: Array[Byte] => try {
+            new String(bs, 0, bs.size)
+          } catch {
+            case _: Exception => "0x" + bs.map("%02X" format _).mkString
+          }
+        })
         case DoubleCol => DoubleL(value match {
           case d: java.lang.Double => d.toDouble
           case f: java.lang.Float => f.toDouble
@@ -184,11 +200,12 @@ object Main {
               case ("meta", "query", Query(sql, _)) => StrL(sql)
               case ("meta", "query", Row(_, _, _, _)) => NullL
               case ("meta", "position", evt) => LongL(evt.meta.position)
-              case ("meta", "timestamp", evt) => LongL(evt.meta.timestamp)
+              case ("meta", "timestamp", evt) =>
+                StrL(new java.sql.Timestamp(evt.meta.timestamp).toString)
               case ("meta", "server_id", evt) => LongL(evt.meta.serverId)
               case ("meta", "xid", evt) => LongL(evt.meta.xid)
               case ("meta", unknownCol, _) =>
-                sys.error(s"unknown col meta.$unknownCol")
+                raise(s"unknown col meta.$unknownCol")
               case _ => ??? // TODO: new, old, data
             }
           case UnQualIdent(columnName) =>
@@ -235,7 +252,7 @@ object Main {
         // planning time rather execution time
         def checkArgs(numExpected: Int)(lit: => Literal): Literal =
           if (args.size == numExpected) lit
-          else sys.error("incorrect number of args to function " + fnName)
+          else raise("incorrect number of args to function " + fnName)
 
         fnName match {
           case "concat" => StrL(args.map(s => castToStr(s).str).mkString)
@@ -261,9 +278,9 @@ object Main {
               val pos = castToLong(args(1)).l.toInt
               val len = castToLong(args(2)).l.toInt
               StrL(str.substring(Math.min(pos, str.length), Math.min(pos + len, str.length)))
-            } else sys.error("incorrect number of args to function " + fnName)
+            } else raise("incorrect number of args to function " + fnName)
           case _ =>
-            sys.error("unknown function: " + fnName)
+            raise("unknown function: " + fnName)
         }
       case Case(scrutinee, branches, elseValue) => // TODO
         branches.view
@@ -367,7 +384,7 @@ object Main {
       execQuery(parsed)
     }) match {
       case Success(_) => println("success")
-      case Failure(msgs) => sys.error("failure: " + msgs.toList.mkString("; "))
+      case Failure(msgs) => raise("failure: " + msgs.toList.mkString("; "))
     }
   }
 

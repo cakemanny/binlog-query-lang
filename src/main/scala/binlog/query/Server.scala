@@ -345,9 +345,21 @@ object Server {
                   }
                   channel.write(eofPacket)
                 } catch {
+                  case e: ClientErrorException =>
+                    channel.write(mkErrorPacket(400, e.getMessage))
                   case e: Exception =>
                     // maybe do stacktrace?
-                    channel.write(mkErrorPacket(1000, "Error: " + e.getMessage))
+                    val stackTrace = {
+                      val sw = new java.io.StringWriter
+                      val pw = new java.io.PrintWriter(sw)
+                      e.printStackTrace(pw)
+                      pw.flush
+                      sw.toString
+                    }
+                    channel.write(mkErrorPacket(
+                      500, s"${e.getClass.getSimpleName}: $stackTrace"
+                    ))
+                    e.printStackTrace()
                 }
                 commandLoop()
             }

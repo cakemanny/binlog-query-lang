@@ -39,7 +39,7 @@ object DataAccess {
   object TableInfo {
     def apply(tableMapEntry: TableMapEventData): TableInfo = {
       import com.github.shyiko.mysql.binlog.event.deserialization.ColumnType
-      val colTypes = tableMapEntry.getColumnTypes
+      val colTypes = tableMapEntry.getColumnTypes.map(java.lang.Byte.toUnsignedInt)
 
       val schema: IndexedSeq[ColType] = colTypes.map(ColumnType.byCode(_)) map {
         case ColumnType.DECIMAL => DoubleCol
