@@ -101,7 +101,7 @@ object BQLParser {
   object Grammar {
     val WsApi = fastparse.WhitespaceApi.Wrapper {
       import fastparse.all._
-      NoTrace((" " | "\t" | "\n").rep)
+      NoTrace((" " | "\t" | "\n" | "\r").rep)
     }
     import fastparse.noApi._
     import WsApi._

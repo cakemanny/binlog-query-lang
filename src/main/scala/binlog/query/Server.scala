@@ -173,7 +173,7 @@ object Server {
     buf.writeByte(12) // length of field definition data
     buf.writeShort(CharacterCodes.utf8_general_ci)
     buf.writeInt(1 << 24) // max field length
-    buf.writeByte(FieldType.MYSQL_TYPE_VARCHAR)
+    buf.writeByte(FieldType.MYSQL_TYPE_VAR_STRING)
     buf.writeShort(0) // field options
     buf.writeByte(0) // decimal point precision
     buf.writeShort(0) // reserved
@@ -311,6 +311,13 @@ object Server {
                 commandLoop()
               case s if s startsWith "SHOW SESSION VARIABLES" =>
                 // empty result set
+                writeResultSet(Vector("Variable_name", "Value"), Vector())
+                commandLoop()
+              // And the guys that make heidi work
+              case "SHOW STATUS" =>
+                writeResultSet(Vector("Variable_name", "Value"), Vector())
+                commandLoop()
+              case "SHOW VARIABLES" =>
                 writeResultSet(Vector("Variable_name", "Value"), Vector())
                 commandLoop()
               case _ => // Our actual query execution code
