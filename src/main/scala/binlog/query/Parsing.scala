@@ -81,17 +81,20 @@ object BQLParser {
 
     val unqualified = P( ident ).map(UnQualIdent)
 
-    val ordinal = P( "[" ~ intLiteral ~ "]" ).map(ColumnOrdinal)
+    val ordinal = P( "[" ~ nonNegative ~ "]" ).map(ColumnOrdinal)
 
-    val qualifiedOrdinal = P( ident ~ ".[" ~ intLiteral ~ "]").map{
+    val qualifiedOrdinal = P( ident ~ ".[" ~ nonNegative ~ "]").map{
       case (tbl, ord) => QualifiedOrd(tbl, ord)
     }
 
     val stringLiteral: Parser[StrL] =
       P( "'" ~/ CharsWhile(_ != '\'', min=0).! ~ "'").map(StrL)
 
-    val intLiteral: Parser[LongL] =
+    val nonNegative: Parser[LongL] =
       P( nonZerodigit ~ digit.rep | "0" ).!.map(s => LongL(s.toLong))
+
+    val intLiteral: Parser[LongL] =
+      P( "-".? ~ nonZerodigit ~ digit.rep | "0" ).!.map(s => LongL(s.toLong))
 
     val quoted: Parser[String] =
       P( "\"" ~/ CharsWhile(_ != '"', min=0).! ~ "\"")
@@ -101,7 +104,11 @@ object BQLParser {
   object Grammar {
     val WsApi = fastparse.WhitespaceApi.Wrapper {
       import fastparse.all._
-      NoTrace((" " | "\t" | "\n" | "\r").rep)
+      NoTrace((
+        CharIn(" \t\n\r")
+        | ("#" | "-- ") ~/ CharsWhile(_ != '\n', min=0)
+        | "/*" ~/ (CharsWhile(_ != '*') | "*" ~ !"/").rep ~ "*/"
+      ).rep)
     }
     import fastparse.noApi._
     import WsApi._
@@ -139,7 +146,7 @@ object BQLParser {
     val groupClause: Parser[Vector[String]] =
       P( kw("group") ~ kw("by") ~/ idList )
 
-    val limitClause: Parser[Long] = P( kw("limit") ~/ intLiteral ).map{ _.l }
+    val limitClause: Parser[Long] = P( kw("limit") ~/ nonNegative ).map{ _.l }
 
     val idList = P( ident.rep(min=1,sep=",".~/) ).map(_.toVector)
 

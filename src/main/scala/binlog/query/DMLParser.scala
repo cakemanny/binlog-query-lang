@@ -30,11 +30,17 @@ object DMLParser {
     import InsertUpdateAST.{ LongL, StrL, DoubleL, NullL }
 
     // TODO: escape sequences
+    val strEscape = P( "\\" ~ CharIn("\'\\bfnrt") )
+
+    val strChars = P( CharsWhile(!"'\\".contains(_: Char)) )
     val stringLiteral: Parser[StrL] =
-      P( "'" ~/ CharsWhile(_ != '\'', min=0).! ~ "'").map(StrL)
+      P( "'" ~/ (strChars | strEscape).rep.! ~ "'").map(StrL)
+
+    val nonNegativeIntLiteral: Parser[LongL] =
+      P( nonZerodigit ~ digit.rep | "0" ).!.map(s => LongL(s.toLong))
 
     val intLiteral: Parser[LongL] =
-      P( nonZerodigit ~ digit.rep | "0" ).!.map(s => LongL(s.toLong))
+      P( "-".? ~ nonZerodigit ~ digit.rep | "0" ).!.map(s => LongL(s.toLong))
 
     // TODO: doubles and decimals
     // TODO: base64 and base64 wrapped blobs
@@ -48,12 +54,8 @@ object DMLParser {
   }
 
   object Grammar {
-    val WsApi = fastparse.WhitespaceApi.Wrapper {
-      import fastparse.all._
-      NoTrace((" " | "\t" | "\n").rep)
-    }
     import fastparse.noApi._
-    import WsApi._
+    import BQLParser.Grammar.WsApi._
     import Lexical._
     import InsertUpdateAST._
 
