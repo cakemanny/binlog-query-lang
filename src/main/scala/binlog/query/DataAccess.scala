@@ -3,9 +3,15 @@ package binlog.query
 import com.github.shyiko.mysql.binlog.event.deserialization.ColumnType
 import com.github.shyiko.mysql.binlog.event.{EventType, TableMapEventData, UpdateRowsEventData, WriteRowsEventData}
 
-// abstract over the binlogc-connector library
+// abstract over the binlog-connector library
 object DataAccess {
 
+  val ConnectionStringPattern =
+    raw"mysql://(?:(?<username>\w+)[:](?<password>[^@]+)@)?(?<hostname>[^:\s]+)(?:[:](?<port>[0-9]+))?(?:/(?<logname>.+)?)?".r
+
+  // A slightly nicer looking way to display the string format
+  val connectionStringMessage =
+    "mysql://[{user}:{password}@]{hostname}[:{port}][/{logname}]"
 
   sealed abstract class ColType
   final case object LongCol extends ColType
@@ -108,7 +114,7 @@ object DataAccess {
       )
     }
   }
-  def mkInsertRow(tableInfo: TableInfo, data: WriteRowsEventData, meta: MetaInfo): Seq[Row] = {
+  def mkInsertRows(tableInfo: TableInfo, data: WriteRowsEventData, meta: MetaInfo): Seq[Row] = {
     import scala.collection.JavaConverters.asScalaBuffer
     asScalaBuffer(data.getRows).map { values =>
       Row(
@@ -122,7 +128,9 @@ object DataAccess {
 
   // should scan file take a continuation or produce an iterator/stream...
   // let's try continuation
-  def scanFile(path: String)(yld: Event => Unit): Unit = {
+  def scanFile(path: String, breakWhen: ((Long,Long)) => Boolean)
+              (yld: Event => Unit)
+      : Unit = {
     import com.github.shyiko.mysql.{ binlog => bl }
     import bl.BinaryLogFileReader
     import bl.event.{ EventHeader, EventHeaderV4 }
@@ -138,8 +146,13 @@ object DataAccess {
 
       var event = binlogReader.readEvent()
       while (event != null) {
-        tableMap = processSingleEvent(event, tableMap)(yld)
-        event = binlogReader.readEvent()
+        val header = event.getHeader[EventHeaderV4]
+        if (breakWhen((header.getPosition, header.getTimestamp))) {
+          event = null
+        } else {
+          tableMap = processSingleEvent(event, tableMap)(yld)
+          event = binlogReader.readEvent()
+        }
       }
     } finally {
       binlogReader.close()
@@ -188,7 +201,7 @@ object DataAccess {
 
         tableMap.get(data.getTableId) match {
           case Some(tableInfo) =>
-            mkInsertRow(tableInfo, data, meta) foreach yld
+            mkInsertRows(tableInfo, data, meta) foreach yld
           case None => () // log warning?
         }
         tableMap
@@ -209,14 +222,14 @@ object DataAccess {
   }
 
   def connectAndStream(connectionString: String)(yld: Event => Unit): Unit = {
-    val pat = raw"mysql://(?:(\w+)[:](\w+)@)?(\w+)(?:[:]([0-9]+))?/?".r
-    val (user, pass, hostname, port) = connectionString match {
-      case pat(user, pass, hostname, port) =>
+    val (user, pass, hostname, port, logname) = connectionString match {
+      case ConnectionStringPattern(user, pass, hostname, port, logname) =>
         (
           Option(user).getOrElse(""),
           Option(pass).getOrElse(""),
           hostname,
-          Option(port).map(_.toInt).getOrElse(3306)
+          Option(port).map(_.toInt).getOrElse(3306),
+          Option(logname)
         )
     }
 

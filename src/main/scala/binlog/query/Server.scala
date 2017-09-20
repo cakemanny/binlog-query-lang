@@ -17,7 +17,7 @@ object Server {
       serveForever(None)
   }
 
-  private def DEFAULT_PORT = 6032
+  private val DEFAULT_PORT = 6032
 
   def serveForever(port: Option[Int]): Unit = {
     val ss = ServerSocketChannel.open()

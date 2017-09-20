@@ -51,10 +51,9 @@ object Main {
 
     def validateConnectionString(ds: String): ValidationNel[String, String] = {
       // want mysql://user:pass@localhost:3306/
-      // TODO: allow specifying the binlog file at the end
-      val pat = raw"mysql://(?:(\w+)[:](\w+)@)?([A-Za-z0-9.]+)(?:[:]([0-9]+))?/?".r
+      import DataAccess.ConnectionStringPattern
       ds match {
-        case pat(user, pass, hostname, port) =>
+        case ConnectionStringPattern(user, pass, hostname, port, logname) =>
           println("host:port: $hostname:$port")
           ds.successNel
         case _ =>
@@ -243,7 +242,7 @@ object Main {
                 }
             }
           case ColumnOrdinal(ord) => evt match {
-            case Row(tableInfo, _, data, _) =>
+            case Row(tableInfo, _, data, _) => // fallback to old?
               val value = data(ord.toInt)
               any2colType(tableInfo.schema(ord.toInt))(value)
             case Query(sql, _) => ??? // parse SQL?
@@ -302,11 +301,8 @@ object Main {
           case _ =>
             raise("unknown function: " + fnName)
         }
-      case Case(scrutinee, branches, elseValue) => // TODO
-        branches.view
-          .filter(p => scrutinee == p._1)
-          .map(_._2)
-          .headOption.getOrElse(elseValue)
+      case Case(scrutinee, branches, elseValue) => // TODO: make non-eager
+        branches.find(p => scrutinee == p._1).map(_._2).getOrElse(elseValue)
     }
 
     def evalFilter(flt: Fix[ExprF])(evt: DataAccess.Event): Boolean = flt.unFix match {
@@ -331,19 +327,18 @@ object Main {
         case NullL => false
         case DoubleL(d) => d != 0.0
       }
-      case Ident(ident) =>
+      case Ident(_) =>
         // devolve to literal case
         evalFilter(Fix[ExprF](Lit(flt.cata(evalExpr(evt)))))(evt)
       case FnCall(_, _) =>
         evalFilter(Fix[ExprF](Lit(flt.cata(evalExpr(evt)))))(evt)
-      case Case(scrutinee, branches, elseValue) => // TODO
-        // Something like first branch where Comp(Eq,scrut, _1) == true give _2
-        // TODO: evaluate scrutinee at most once
+      case Case(scrutinee, branches, elseValue) =>
+        val scrutLit = Fix[ExprF](Lit(scrutinee.cata(evalExpr(evt))))
         evalFilter(
-          branches.view
-            .filter(p => evalFilter(Fix(Comp(Eq, scrutinee, p._1)))(evt))
+          branches
+            .find(p => evalFilter(Fix(Comp(Eq, scrutLit, p._1)))(evt))
             .map(_._2)
-            .headOption.getOrElse(elseValue)
+            .getOrElse(elseValue)
         )(evt)
     }
 
@@ -356,16 +351,27 @@ object Main {
         // * Want to fold constant expressions
         val theFilter = flt.getOrElse(Fix[ExprF](Lit(LongL1)))
 
+        // Plan:
+        // suppose filter root expr is And (other way put expr into And)
+        // 1. partition nodes of And into constant, meta-only, row
+        // 2. evaluate constant expressions
+        // 3. pass the meta-only portion down to the scanner
+
         val startTime = System.currentTimeMillis
         var rowsReturned = 0L
+        val limitReached: Any => Boolean = lim
+          .map(maxRows => (_:Any) => rowsReturned >= maxRows)
+          .getOrElse(_ => false)
 
         // print header
         header(prj._1)
         // Want to branch strategy for group by case
         // FIX ME, if it's a mysql://... we want to stream somewhat
-        DataAccess.scanFile(ds) { evt =>
+        DataAccess.scanFile(ds, limitReached) { evt =>
           // evaluate the filter against the event
           if (evalFilter(theFilter)(evt)) {
+            // We have to include the limit condition here as well because
+            // an event can contain multiple rows
             if (lim.map(_ > rowsReturned).getOrElse(true)) {
               rowsReturned += 1L
               // project? or group?
