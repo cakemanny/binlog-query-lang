@@ -342,9 +342,36 @@ object Main {
         )(evt)
     }
 
+    val isConstExpr: Algebra[ExprF, Boolean] = {
+      case Select(_, _, _, _, _) => sys.error("nested select")
+      case Stream(_, _, _, _, _) => sys.error("nested stream")
+      case And(exprs) =>
+        exprs.forall(x => x) // Should this be is any are const and false?
+      case Or(exprs) =>
+        exprs.forall(x => x) // Should this be if any are const and true?
+      case Not(expr) => expr
+      case Comp(compOp, lhs, rhs) => lhs && rhs
+      case Like(expr, pattern) => expr
+      case BinOp(numOp, lhs, rhs) => lhs && rhs
+      case Lit(_) => true
+      case Ident(_) => false
+      case FnCall(fnName, args) => args.forall(x => x)
+      case Case(scrutinee, branches, elseValue) =>
+        scrutinee && branches.forall{case (cnd,value) => cnd && value} && elseValue // maybe something similar to OR
+    }
+
     // Evaluate
     def execQuery(op: Fix[ExprF]): Unit = op match {
       case Fix(Select(prj, ds, flt, grp, lim)) =>
+        val startTime = System.currentTimeMillis
+
+        // if we are grouping then all identifiers must be in a subexpression
+        // of a grouping function
+        // Change: select a, agg(b) + 1 from x group by a
+        // Into: scan x -> select a,b
+        //              -> group by a aggregate b using agg
+        //              -> select a, agg(b) + 1)
+
         // * We want to use parts of the filter to influence how we scan the file!
         // Not possible with shyiko apparently!
         // * Want to reorder Ands and Ors from least computational to most
@@ -357,28 +384,87 @@ object Main {
         // 2. evaluate constant expressions
         // 3. pass the meta-only portion down to the scanner
 
-        val startTime = System.currentTimeMillis
         var rowsReturned = 0L
+
         val limitReached: Any => Boolean = lim
           .map(maxRows => (_:Any) => rowsReturned >= maxRows)
           .getOrElse(_ => false)
+
+        // each aggregate column can have multple aggregate expressions
+        var grouping = Map.empty[Vector[Literal], Vector[Vector[Literal]]]
+
+        val mainLoop: DataAccess.Event => Unit = grp match {
+          case Some(keys) =>
+            val nonPrjCols = keys.filterNot(prj._1 contains _).mkString(",")
+            if (nonPrjCols != "") {
+              raise(s"Columns $nonPrjCols in group by but not in select")
+            }
+            val (keyCols, aggCols) =
+              prj._1.zipWithIndex.partition(keys contains _._1)
+
+            aggCols.foreach{ case (colName, prjIdx) =>
+              // Check contains non-nested aggresgate FnCalls
+            }
+
+            { evt =>
+              val keyVals = (prj._1 zip prj._2).filter{ keys contains (_: (String, Fix[ExprF]))._1 }.map{
+                _._2.cata(evalExpr(evt))
+              }
+
+              if (grouping contains keyVals) {
+                // agg into existing collection
+              } else {
+                // prime with initial value
+              }
+            }
+          case None => { evt =>
+            rowsReturned += 1L
+            // project? or group?
+            val projected = prj._2.map{ _.cata(evalExpr(evt)) }
+            yld(projected)
+          }
+        }
+
+        val withLimit: DataAccess.Event => Unit = lim match {
+          case Some(maxRows) => evt => if (maxRows > rowsReturned) {
+            mainLoop(evt)
+          }
+          case None => mainLoop
+        }
+
+        val (mainLoopWithFilter, limitReachedWithFilter)
+            : (DataAccess.Event => Unit, Any => Boolean) =
+          if (theFilter.cata(isConstExpr)) {
+            println("# constant expression for filter, can pre-evaluate")
+            if (evalFilter(theFilter)(null)) {
+              // always true
+              println("# eliminating where")
+              (withLimit, limitReached)
+            } else {
+              // always false, do nothing
+              println("# impossible where")
+              (_ => (), _ => true)
+            }
+          } else ({ evt =>
+            // evaluate the filter against the event
+            if (evalFilter(theFilter)(evt)) {
+              withLimit(evt)
+            }
+          }, limitReached)
 
         // print header
         header(prj._1)
         // Want to branch strategy for group by case
         // FIX ME, if it's a mysql://... we want to stream somewhat
-        DataAccess.scanFile(ds, limitReached) { evt =>
-          // evaluate the filter against the event
-          if (evalFilter(theFilter)(evt)) {
-            // We have to include the limit condition here as well because
-            // an event can contain multiple rows
-            if (lim.map(_ > rowsReturned).getOrElse(true)) {
-              rowsReturned += 1L
-              // project? or group?
-              val projected = prj._2.map{ _.cata(evalExpr(evt)) }
-              yld(projected)
+        DataAccess.scanFile(ds, limitReachedWithFilter)(mainLoopWithFilter)
+
+        grp match {
+          case Some(keys) =>
+            // Loop through grouping and 
+            grouping.foreach{ case (keyValues, aggValues) =>
+
             }
-          }
+          case None =>
         }
 
         val endTime = System.currentTimeMillis
@@ -409,7 +495,7 @@ object Main {
     } yield {
       execQuery(parsed)
     }) match {
-      case Success(_) => println("success")
+      case Success(_) => println("# success")
       case Failure(msgs) => raise("failure: " + msgs.toList.mkString("; "))
     }
   }
