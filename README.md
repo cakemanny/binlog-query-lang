@@ -58,3 +58,12 @@ mysql> select meta.timestamp, data.[0] as my_primary_key
     -> where old.[1] <> new.[1] limit 10;
 ```
 
+Backend
+-------
+We are currently using shyiko's
+[mysql-binlog-connector-java](https://github.com/shyiko/mysql-binlog-connector-java)
+for the backend - reading the binary logs. It's well maintained and reliable but
+currently we have to scan the entire binlog for each query - so may want to
+swap that out when we have the language a bit more stable.
+
+

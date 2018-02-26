@@ -7,6 +7,8 @@ import scala.annotation.tailrec
 
 /**
  * A MySql 4.1 protocol server for the binlog-query language
+ * The details of the protocol can be found in the O'Reilly Understanding
+ * MySQL Internals book, chapter 4.
  */
 object Server {
 
