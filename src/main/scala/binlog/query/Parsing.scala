@@ -197,14 +197,14 @@ object BQLParser {
       )
     }
 
-    val product: Parser[Expr] =
+    // a ~ [(* b) (* c)] =>  a ~ x => ((x * b) * c)  => ((a * b) * c)
+    val product: Parser[Expr] = {
+      val rightOp =
+        P(starOrSlash ~ simpleExpr).map{ case (op, e2) => op(_: Expr, e2) }
       P(
-        simpleExpr ~ (starOrSlash ~ simpleExpr).rep.map{
-          _.foldLeft((x:Expr) => x){
-            case (oldOp, (op, e2)) => { (e1: Expr) => op(oldOp(e1), e2) }
-          }
-        }
+        simpleExpr ~ rightOp.rep.map(Function.chain)
       ).map{case (e1, rhs) => rhs(e1)}
+    }
 
     val simpleExpr: Parser[Expr] =
       P( literal
