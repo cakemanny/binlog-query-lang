@@ -14,16 +14,20 @@ libraryDependencies ++= Seq(
   "com.lihaoyi" %% "fastparse" % "0.4.2",
   //"com.github.pathikrit"  %% "better-files-akka"  % "3.0.0",
   "com.github.shyiko" % "mysql-binlog-connector-java" % "0.13.0",
-  "com.lihaoyi" % "ammonite" % "1.0.1" % "test" cross CrossVersion.full
+  //"com.lihaoyi" % "ammonite" % "1.0.1" % "test" cross CrossVersion.full,
+
+  "com.lihaoyi" %% "utest" % "0.5.3" % "test"
 )
+
+testFrameworks += new TestFramework("utest.runner.Framework")
 
 scalacOptions += "-Ypartial-unification"
 scalacOptions += "-unchecked"
 scalacOptions += "-deprecation"
 
-sourceGenerators in Test += Def.task {
-  val file = (sourceManaged in Test).value / "amm.scala"
-  IO.write(file, """object amm extends App { ammonite.Main().run() }""")
-  Seq(file)
-}.taskValue
+//sourceGenerators in Test += Def.task {
+//  val file = (sourceManaged in Test).value / "amm.scala"
+//  IO.write(file, """object amm extends App { ammonite.Main().run() }""")
+//  Seq(file)
+//}.taskValue
 

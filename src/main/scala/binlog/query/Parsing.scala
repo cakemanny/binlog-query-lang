@@ -87,6 +87,8 @@ object BQLParser {
       case (tbl, ord) => QualifiedOrd(tbl, ord)
     }
 
+    // TODO: escape sequences!
+
     val stringLiteral: Parser[StrL] =
       P( "'" ~/ CharsWhile(_ != '\'', min=0).! ~ "'").map(StrL)
 
@@ -187,9 +189,24 @@ object BQLParser {
 
     val bitExpr =
       P( product.rep(min=1, sep="+") ).map{ _.reduceLeft((e1,e2) => Fix(BinOp(Plus, e1, e2))) }
-    val product =
-      P( simpleExpr.rep(min=1, sep="*") ).map{ _.reduceLeft((e1,e2) => Fix(BinOp(Multiply, e1, e2))) }
-    val simpleExpr =
+
+    val starOrSlash: Parser[(Expr,Expr) => Expr] = {
+      def liftOp(op: NumOp) = (a: Expr, b: Expr) => Fix(BinOp(op, a, b))
+      P(  P("*").map(_ => liftOp(Multiply))
+        | P("/").map(_ => liftOp(Divide))
+      )
+    }
+
+    val product: Parser[Expr] =
+      P(
+        simpleExpr ~ (starOrSlash ~ simpleExpr).rep.map{
+          _.foldLeft((x:Expr) => x){
+            case (oldOp, (op, e2)) => { (e1: Expr) => op(oldOp(e1), e2) }
+          }
+        }
+      ).map{case (e1, rhs) => rhs(e1)}
+
+    val simpleExpr: Parser[Expr] =
       P( literal
         | functionCall
         | identifier.map(i => Fix(Ident(i)): Expr)
