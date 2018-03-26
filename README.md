@@ -1,4 +1,4 @@
-BQL - The MySQL Binlog Query Language
+BQL - The MySQL Binlog Query Language [![Build Status](https://travis-ci.org/cakemanny/binlog-query-lang.svg?branch=master)](https://travis-ci.org/cakemanny/binlog-query-lang)
 =====================================
 
 A language for querying MySQL binary log files.
