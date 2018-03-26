@@ -54,8 +54,13 @@ object ParsingTest extends TestSuite {
     // Expressions
     "plus"          - { canParse("""select 1 + 1 as x from "t" """) }
     "plus"          - { canParse("""select 1+1+1 as x from "t" """) }
-    //"minus"         - { canParse("""select 1 - 1 as x from "t" """) }
-    //"minus"         - { canParse("""select 1 - 1 - 1 as x from "t" """) }
+    "plus no dbl"   - {cantParse("""select 1 + +1 as x from "t" """) }
+    "minus"         - { canParse("""select 1 - 1 as x from "t" """) }
+    "minus"         - { canParse("""select 1-1 as x from "t" """) }
+    "minus"         - { canParse("""select 1 - 1 - 1 as x from "t" """) }
+    "plus add neg"  - { canParse("""select 1 + -1 as x from "t" """) }
+    "minus no dbl"  - {cantParse("""select 1 - - 1 as x from "t" """) }
+    "minus sub neg" - { canParse("""select 1 - -1 as x from "t" """) }
     "times"         - { canParse("""select 1 * 1 as x from "t" """) }
     "times"         - { canParse("""select 1*1*1 as x from "t" """) }
     "divide"        - { canParse("""select 1 / 1 as x from "t" """) }

@@ -187,15 +187,28 @@ object BQLParser {
         | P(">").map(_ => Gte)
       )
 
-    val bitExpr =
-      P( product.rep(min=1, sep="+") ).map{ _.reduceLeft((e1,e2) => Fix(BinOp(Plus, e1, e2))) }
+    def liftOp(op: NumOp) = (a: Expr, b: Expr) => Fix(BinOp(op, a, b))
 
-    val starOrSlash: Parser[(Expr,Expr) => Expr] = {
-      def liftOp(op: NumOp) = (a: Expr, b: Expr) => Fix(BinOp(op, a, b))
+    val plusOrMinus =
+      P(  P("+").map(_ => liftOp(Plus))
+        | P("-").map(_ => liftOp(Minus))
+      )
+
+    val bitExpr: Parser[Expr] = {
+      val rightOp =
+        P(plusOrMinus ~ product).map{ case (op, e2) => op(_: Expr, e2) }
+      P(
+        product ~ rightOp.rep.map(Function.chain)
+      ).map{case (e1, rhs) => rhs(e1)}
+    }
+
+    //val bitExpr: Parser[Expr] =
+    //  P( product.rep(min=1, sep="+") ).map{ _.reduceLeft((e1,e2) => Fix(BinOp(Plus, e1, e2))) }
+
+    val starOrSlash: Parser[(Expr,Expr) => Expr] =
       P(  P("*").map(_ => liftOp(Multiply))
         | P("/").map(_ => liftOp(Divide))
       )
-    }
 
     // a ~ [(* b) (* c)] =>  a ~ x => ((x * b) * c)  => ((a * b) * c)
     val product: Parser[Expr] = {
