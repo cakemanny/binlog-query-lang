@@ -253,6 +253,3 @@ object BQLParser {
   }
 
 }
-
-
-

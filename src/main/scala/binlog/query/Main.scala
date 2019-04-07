@@ -2,6 +2,10 @@ package binlog.query
 
 object Main {
 
+  /**
+   * Print the results of the query to the console.
+   * @param query The BQL Query
+   */
   def runQueryAndPrint(query: String): Unit = {
     runQuery(query){ header =>
       println(header mkString "\t")
@@ -17,7 +21,7 @@ object Main {
     }
   }
 
-  def raise(msg: String): Nothing = {
+  private def raise(msg: String): Nothing = {
     throw new ClientErrorException(msg)
   }
 
@@ -160,13 +164,13 @@ object Main {
             @inline def appLong(f: (Long, Long) => Boolean) =
               bool2Long(f(castToLong(lhs).l, castToLong(rhs).l))
             compOp match {
-            case Eq => appLong(_ == _)
-            case Neq => appLong(_ != _)
-            case Gt => appLong(_ > _)
-            case Gte => appLong(_ >= _)
-            case Lt => appLong(_ < _)
-            case Lte => appLong(_ <= _)
-          }
+              case Eq => appLong(_ == _)
+              case Neq => appLong(_ != _)
+              case Gt => appLong(_ > _)
+              case Gte => appLong(_ >= _)
+              case Lt => appLong(_ < _)
+              case Lte => appLong(_ <= _)
+            }
         }
       case Like(expr, pattern) =>
         val str = castToStr(expr).str
@@ -342,6 +346,9 @@ object Main {
         )(evt)
     }
 
+    /**
+     * Whether an expression can be evaluated without inspecting any row data
+     */
     val isConstExpr: Algebra[ExprF, Boolean] = {
       case Select(_, _, _, _, _) => sys.error("nested select")
       case Stream(_, _, _, _, _) => sys.error("nested stream")
@@ -362,7 +369,7 @@ object Main {
 
     // Evaluate
     def execQuery(op: Fix[ExprF]): Unit = op match {
-      case Fix(Select(prj, ds, flt, grp, lim)) =>
+      case Fix(Select((fldNames, fldExprs), ds, flt, grp, lim)) =>
         val startTime = System.currentTimeMillis
 
         // if we are grouping then all identifiers must be in a subexpression
@@ -395,19 +402,21 @@ object Main {
 
         val mainLoop: DataAccess.Event => Unit = grp match {
           case Some(keys) =>
-            val nonPrjCols = keys.filterNot(prj._1 contains _).mkString(",")
+            val nonPrjCols = keys.filterNot(fldNames contains _).mkString(",")
             if (nonPrjCols != "") {
               raise(s"Columns $nonPrjCols in group by but not in select")
             }
             val (keyCols, aggCols) =
-              prj._1.zipWithIndex.partition(keys contains _._1)
+              fldNames.zipWithIndex.partition(keys contains _._1)
 
             aggCols.foreach{ case (colName, prjIdx) =>
-              // Check contains non-nested aggresgate FnCalls
+              // Check contains non-nested aggregate FnCalls
             }
 
             { evt =>
-              val keyVals = (prj._1 zip prj._2).filter{ keys contains (_: (String, Fix[ExprF]))._1 }.map{
+              val keyVals = (fldNames zip fldExprs).filter{
+                keys contains (_: (String, Fix[ExprF]))._1
+              }.map{
                 _._2.cata(evalExpr(evt))
               }
 
@@ -420,7 +429,7 @@ object Main {
           case None => { evt =>
             rowsReturned += 1L
             // project? or group?
-            val projected = prj._2.map{ _.cata(evalExpr(evt)) }
+            val projected = fldExprs.map{ _.cata(evalExpr(evt)) }
             yld(projected)
           }
         }
@@ -445,22 +454,34 @@ object Main {
               println("# impossible where")
               (_ => (), _ => true)
             }
-          } else ({ evt =>
-            // evaluate the filter against the event
-            if (evalFilter(theFilter)(evt)) {
-              withLimit(evt)
-            }
-          }, limitReached)
+          } else (
+            { evt =>
+              // evaluate the filter against the event
+              if (evalFilter(theFilter)(evt)) {
+                withLimit(evt)
+              }
+            },
+            limitReached
+          )
 
         // print header
-        header(prj._1)
+        header(fldNames)
         // Want to branch strategy for group by case
         // FIX ME, if it's a mysql://... we want to stream somewhat
         DataAccess.scanFile(ds, limitReachedWithFilter)(mainLoopWithFilter)
 
+        // ^ Should be something like
+        // if isGrouping {
+        //  var groupedRows = ...
+        //  DataAccess.scanFile(ds, (_ => false))({ evt => groupedRows :+ ... })
+        //  scanGrouping(groupedRows, limitReachedWithFilter)(mainLoopWithFilter)
+        // } else {
+        //  DataAccas.scanFile(ds, limitReachedWithFilter)(mainLoopWithFilter)
+        // }
+
         grp match {
           case Some(keys) =>
-            // Loop through grouping and 
+            // Loop through grouping and
             grouping.foreach{ case (keyValues, aggValues) =>
 
             }
@@ -469,11 +490,12 @@ object Main {
 
         val endTime = System.currentTimeMillis
         println(s"# $rowsReturned rows returned in ${endTime - startTime}ms")
-      case Fix(Stream(prj, ds, flt, grp, lim)) =>
+
+      case Fix(Stream((fldNames, fldExprs), ds, flt, grp, lim)) =>
         val theFilter = flt.getOrElse(Fix[ExprF](Lit(LongL1)))
         var rowsReturned = 0L
 
-        header(prj._1)
+        header(fldNames)
 
         DataAccess.connectAndStream(ds) { evt =>
           // evaluate the filter against the event
@@ -481,7 +503,7 @@ object Main {
             if (lim.map(_ > rowsReturned).getOrElse(true)) {
               rowsReturned += 1L
               // project? or group?
-              val projected = prj._2.map{ _.cata(evalExpr(evt)) }
+              val projected = fldExprs.map{ _.cata(evalExpr(evt)) }
               yld(projected)
             }
           }
