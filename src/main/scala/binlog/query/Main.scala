@@ -204,6 +204,7 @@ object Main {
               case ("meta", "query", Row(_, _, _, _)) => NullL
               case ("meta", "position", evt) => LongL(evt.meta.position)
               case ("meta", "timestamp", evt) =>
+                // FIXME: This does not work in your timezone
                 StrL(new java.sql.Timestamp(evt.meta.timestamp).toString)
               case ("meta", "server_id", evt) => LongL(evt.meta.serverId)
               case ("meta", "xid", evt) => LongL(evt.meta.xid)
