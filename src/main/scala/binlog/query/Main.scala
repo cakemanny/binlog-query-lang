@@ -249,7 +249,7 @@ object Main {
             case Row(tableInfo, _, data, _) => // fallback to old?
               val value = data(ord.toInt)
               any2colType(tableInfo.schema(ord.toInt))(value)
-            case Query(sql, _) => ??? // parse SQL?
+            case Query(sql, _) => NullL // TODO. parse SQL?
           }
           case QualifiedOrd(tableName, ord) => evt match {
             case Row(tableInfo, before, data, _) =>
