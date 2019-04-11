@@ -99,6 +99,7 @@ object Main {
     def any2colType(colType: => DataAccess.ColType)(value: Any): Literal = {
       import DataAccess._
       colType match {
+        case _ if value == null => NullL
         case LongCol => LongL(value match {
           case i: java.lang.Integer => i.toLong
           case l: java.lang.Long => l.toLong
