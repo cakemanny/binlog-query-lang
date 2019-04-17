@@ -309,6 +309,27 @@ object ExecutionTest extends TestSuite {
         Vector(LongL(666), LongL(4)),
       ))
     }
+
+    "group:multi" - {
+      val query = """
+      | select meta.position, sum(new.[0]) as total
+      | from "test_files/mysqld-bin.000004"
+      | where new.[0]
+      | group by position
+      |""".stripMargin
+      def header(cols: Vector[String]): Unit = {
+        assert(cols == Vector("position", "total"))
+      }
+      var rows = Vector.empty[Vector[QueryAST.Literal]]
+      Main.runQuery(query)(header){ row =>
+        rows = rows :+ row
+      }
+      assert(rows == Vector(
+        Vector(LongL(450), LongL(10)),
+        Vector(LongL(666), LongL(14)),
+      ))
+    }
+
   }
 
 }
