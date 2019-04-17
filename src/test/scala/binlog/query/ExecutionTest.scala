@@ -208,7 +208,7 @@ object ExecutionTest extends TestSuite {
       ))
     }
 
-    "like" - {
+    "plus" - {
       val query = """
       | select meta.position, old.[0], new.[0], old.[0] + new.[0] as added
       | from "test_files/mysqld-bin.000004"
@@ -232,6 +232,83 @@ object ExecutionTest extends TestSuite {
     // TODO: continue here with
     // * function calls
     // * case expressions
+    //
+
+    "group" - {
+      val query = """
+      | select meta.position, sum(old.[0]) as total
+      | from "test_files/mysqld-bin.000004"
+      | where meta.position = 666
+      | group by position
+      |""".stripMargin
+      def header(cols: Vector[String]): Unit = {
+        assert(cols == Vector("position", "total"))
+      }
+      var rows = Vector.empty[Vector[QueryAST.Literal]]
+      Main.runQuery(query)(header){ row =>
+        rows = rows :+ row
+      }
+      assert(rows == Vector(
+        Vector(LongL(666), LongL(10)),
+      ))
+    }
+
+    "group:count" - {
+      val query = """
+      | select meta.position, count(old.[0]) as total
+      | from "test_files/mysqld-bin.000004"
+      | where meta.position = 666
+      | group by position
+      |""".stripMargin
+      def header(cols: Vector[String]): Unit = {
+        assert(cols == Vector("position", "total"))
+      }
+      var rows = Vector.empty[Vector[QueryAST.Literal]]
+      Main.runQuery(query)(header){ row =>
+        rows = rows :+ row
+      }
+      assert(rows == Vector(
+        Vector(LongL(666), LongL(4)),
+      ))
+    }
+
+    "group:min" - {
+      val query = """
+      | select meta.position, min(old.[0]) as total
+      | from "test_files/mysqld-bin.000004"
+      | where meta.position = 666
+      | group by position
+      |""".stripMargin
+      def header(cols: Vector[String]): Unit = {
+        assert(cols == Vector("position", "total"))
+      }
+      var rows = Vector.empty[Vector[QueryAST.Literal]]
+      Main.runQuery(query)(header){ row =>
+        rows = rows :+ row
+      }
+      assert(rows == Vector(
+        Vector(LongL(666), LongL(1)),
+      ))
+    }
+
+    "group:max" - {
+      val query = """
+      | select meta.position, max(old.[0]) as total
+      | from "test_files/mysqld-bin.000004"
+      | where meta.position = 666
+      | group by position
+      |""".stripMargin
+      def header(cols: Vector[String]): Unit = {
+        assert(cols == Vector("position", "total"))
+      }
+      var rows = Vector.empty[Vector[QueryAST.Literal]]
+      Main.runQuery(query)(header){ row =>
+        rows = rows :+ row
+      }
+      assert(rows == Vector(
+        Vector(LongL(666), LongL(4)),
+      ))
+    }
   }
 
 }

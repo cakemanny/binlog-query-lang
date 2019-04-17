@@ -179,7 +179,7 @@ object DataAccess {
       header.getTimestamp,
       xid = 0L // we could wait until the transaction completes to
       // produce the event...
-      // todo: buffer the events and add xid when we know it
+      // TODO: buffer the events and add xid when we know it
     )
 
     eventType match {

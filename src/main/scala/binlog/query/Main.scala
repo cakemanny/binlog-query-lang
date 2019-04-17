@@ -205,8 +205,13 @@ object Main {
               case ("meta", "query", Row(_, _, _, _)) => NullL
               case ("meta", "position", evt) => LongL(evt.meta.position)
               case ("meta", "timestamp", evt) =>
-                // FIXME: This does not work in your timezone
-                StrL(new java.sql.Timestamp(evt.meta.timestamp).toString)
+                StrL({
+                  import java.time.format.DateTimeFormatter
+                  val inst = new java.sql.Timestamp(evt.meta.timestamp).toInstant
+                  DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.S").format(
+                    inst.atOffset(java.time.ZoneOffset.UTC)
+                  )
+                })
               case ("meta", "server_id", evt) => LongL(evt.meta.serverId)
               case ("meta", "xid", evt) => LongL(evt.meta.xid)
               case ("meta", unknownCol, _) =>
@@ -311,6 +316,65 @@ object Main {
         branches.find(p => scrutinee == p._1).map(_._2).getOrElse(elseValue)
     }
 
+    val containsAggFn: Algebra[ExprF, Boolean] = {
+      case Select(_, _, _, _, _) => sys.error("nested select")
+      case Stream(_, _, _, _, _) => sys.error("nested stream")
+      case And(exprs) => exprs.exists(x => x)
+      case Or(exprs) => exprs.exists(x => x)
+      case Not(expr) => expr
+      case Comp(compOp, lhs, rhs) => lhs || rhs
+      case Like(expr, pattern) => expr
+      case BinOp(numOp, lhs, rhs) => lhs || rhs
+      case Lit(_) => false
+      case Ident(_) => false
+      case FnCall(fnName, args) => (
+        Seq("sum", "count", "max", "min").contains(fnName)
+        || args.exists(x => x)
+      )
+      case Case(scrutinee, branches, elseValue) =>
+        scrutinee || branches.exists{case (cnd,value) => cnd || value} || elseValue
+    }
+
+    def evalAggExpr(expr: Fix[ExprF])(evts: Vector[DataAccess.Event]): Literal = expr.unFix match {
+      case FnCall(fnName, args) =>
+        def checkArgs(numExpected: Int)(lit: => Literal): Literal =
+          if (args.size == numExpected) lit
+          else raise("incorrect number of args to function " + fnName)
+        def values = evts.map{evt => args(0).cata(evalExpr(evt))}
+        def nonNullLongs = values.filterNot(_ == NullL).map(castToLong(_).l)
+
+        fnName match {
+          case "sum" => checkArgs(1){
+            val nonNull = nonNullLongs
+            if (nonNull.size > 0)
+              LongL(nonNull.sum)
+            else
+              NullL
+          }
+          case "count" => checkArgs(1){
+            LongL(nonNullLongs.size)
+          }
+          case "max" => checkArgs(1){
+            val nonNull = nonNullLongs
+            if (nonNull.size > 0)
+              LongL(nonNull.max)
+            else
+              NullL
+          }
+          case "min" => checkArgs(1){
+            val nonNull = nonNullLongs
+            if (nonNull.size > 0)
+              LongL(nonNull.min)
+            else
+              NullL
+          }
+          case _ =>
+            raise("unknown function: " + fnName)
+        }
+      // FIXME: what if, we want `1 + sum([0])` then this is broken
+      case _ => expr.cata(evalExpr(evts(0)))
+    }
+
     def evalFilter(flt: Fix[ExprF])(evt: DataAccess.Event): Boolean = flt.unFix match {
       case Select(_, _, _, _, _) => sys.error("nested select")
       case Stream(_, _, _, _, _) => sys.error("nested stream")
@@ -379,7 +443,7 @@ object Main {
         // Change: select a, agg(b) + 1 from x group by a
         // Into: scan x -> select a,b
         //              -> group by a aggregate b using agg
-        //              -> select a, agg(b) + 1)
+        //              -> select a, agg(b) + 1
 
         // * We want to use parts of the filter to influence how we scan the file!
         // Not possible with shyiko apparently!
@@ -400,7 +464,7 @@ object Main {
           .getOrElse(_ => false)
 
         // each aggregate column can have multple aggregate expressions
-        var grouping = Map.empty[Vector[Literal], Vector[Vector[Literal]]]
+        var grouping = Map.empty[Vector[Literal], Vector[DataAccess.Event]]
 
         val mainLoop: DataAccess.Event => Unit = grp match {
           case Some(keys) =>
@@ -412,7 +476,7 @@ object Main {
               fldNames.zipWithIndex.partition(keys contains _._1)
 
             aggCols.foreach{ case (colName, prjIdx) =>
-              // Check contains non-nested aggregate FnCalls
+              // TODO: Check contains non-nested aggregate FnCalls
             }
 
             { evt =>
@@ -422,15 +486,22 @@ object Main {
                 _._2.cata(evalExpr(evt))
               }
 
+              // TODO: If there is a limit and no "order by", then we can stop
+              // stop adding groups once we hit that limit
               if (grouping contains keyVals) {
                 // agg into existing collection
+                grouping = grouping + (
+                  keyVals -> (grouping(keyVals) :+ evt)
+                )
               } else {
                 // prime with initial value
+                grouping = grouping + (
+                  keyVals -> Vector(evt)
+                )
               }
             }
           case None => { evt =>
             rowsReturned += 1L
-            // project? or group?
             val projected = fldExprs.map{ _.cata(evalExpr(evt)) }
             yld(projected)
           }
@@ -472,20 +543,24 @@ object Main {
         // FIX ME, if it's a mysql://... we want to stream somewhat
         DataAccess.scanFile(ds, limitReachedWithFilter)(mainLoopWithFilter)
 
-        // ^ Should be something like
-        // if isGrouping {
-        //  var groupedRows = ...
-        //  DataAccess.scanFile(ds, (_ => false))({ evt => groupedRows :+ ... })
-        //  scanGrouping(groupedRows, limitReachedWithFilter)(mainLoopWithFilter)
-        // } else {
-        //  DataAccas.scanFile(ds, limitReachedWithFilter)(mainLoopWithFilter)
-        // }
-
         grp match {
           case Some(keys) =>
-            // Loop through grouping and
-            grouping.foreach{ case (keyValues, aggValues) =>
 
+            // LU=look-up
+            val containsAggLU = fldExprs.map{e => e -> e.cata(containsAggFn)}.toMap
+
+            // Loop through grouping and
+            grouping.foreach{ case (keyValues, groupedEvts) =>
+              rowsReturned += 1L
+
+              val projected = fldExprs.map{ expr =>
+                if (containsAggLU(expr)) {
+                  evalAggExpr(expr)(groupedEvts)
+                } else {
+                  expr.cata(evalExpr(groupedEvts(0)))
+                }
+              }
+              yld(projected)
             }
           case None =>
         }
